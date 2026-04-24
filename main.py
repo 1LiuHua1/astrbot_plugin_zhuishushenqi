@@ -252,7 +252,7 @@ class UserStore:
 # 插件主类
 # ---------------------------------------------------------------------------
 
-@register("astrbot_plugin_zhuishushenqi", "xiaohai", "追书神器免费版插件",
+@register("astrbot_plugin_zhuishushenqi", "1LiuHua1", "追书神器免费版插件",
           "1.0.0", "支持短信登录、极验自动过验、青龙同步")
 class ZhuishuShenqiPlugin(Star):
     def __init__(self, context: Context):
