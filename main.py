@@ -55,7 +55,7 @@ async def _get_geetest_response(gt: str, challenge: str, appkey: str, referer: s
 # ---------------------------------------------------------------------------
 
 class ZSSQClient:
-    """封装追书神器免费版的登录与信息查询接口。"""
+    """封装追书神器免费版的接口，优先通过 /account/profile 检测登录态并获取 Token。"""
 
     def __init__(self, api_base: str = "https://goldcoinnew.zhuishushenqi.com"):
         self.api_base = api_base
@@ -70,57 +70,81 @@ class ZSSQClient:
         if self.session:
             await self.session.close()
 
+    # ---------- 主要使用的登录态检查方法 ----------
+    async def check_auth(self, token: Optional[str] = None) -> Dict[str, Any]:
+        """
+        通过访问 /account/profile 检测当前客户端是否具备有效登录态。
+        如果提供了 token，则使用该 token 请求；否则不带 token 直接访问，
+        尝试触发服务器下发或默认行为。
+
+        返回 {success, token, uid, msg}
+        """
+        await self._ensure_session()
+        url = f"{self.api_base}/account/profile"
+        headers = {
+            "User-Agent": "ZhuiShu/5.0.1 (iPhone; iOS 16.0; Scale/3.00)",
+            "X-Device-Id": self._device_id,
+            "Accept": "application/json",
+        }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        async with self.session.get(url, headers=headers, allow_redirects=True) as resp:
+            status = resp.status
+            resp_text = await resp.text()
+            logger.info(f"/account/profile 响应码: {status}, 内容: {resp_text[:200]}...")
+            if status == 200:
+                try:
+                    data = json.loads(resp_text)
+                except Exception:
+                    return {"success": False, "msg": f"返回非 JSON 数据: {resp_text[:100]}"}
+                # 追书神器正常返回数据格式可能为 {"ok": true, "data": {...}} 或直接包含用户信息
+                if data.get("ok"):
+                    # 有些情况下这个接口会直接返回用户数据，但没有 token
+                    # 如果有 user 字段，视为登录成功，但没有 token 时可能需要从别处获取
+                    user_info = data.get("data") or data.get("user")
+                    if user_info:
+                        uid = str(user_info.get("id", ""))
+                        # 此处无法直接获取 token，需要用户手动提供。提示登录成功但需要手动输入token
+                        return {"success": True, "uid": uid, "msg": "检测到有效登录态，但自动获取 token 较复杂，请手动输入 token 或使用 /zssq_token 设置"}
+                    # 如果没有用户信息但 ok 为真，也是一种成功
+                    return {"success": True, "msg": "登录态检测通过"}
+                # 返回的 ok 为 false，通常说明未登录
+                return {"success": False, "msg": data.get("msg", "未登录或 token 无效")}
+            else:
+                return {"success": False, "msg": f"服务器返回 {status}"}
+
+    # ---------- 旧的短信发送方法，已保留但不再使用 ----------
     async def request_sms_code(self, phone: str) -> Dict[str, Any]:
-        """请求短信验证码。返回 {success, gt, challenge, msg}"""
+        """（已废弃）请求短信验证码，此接口可能会 404。"""
         await self._ensure_session()
         url = f"{self.api_base}/user/sendsms"
         headers = {
-            "User-Agent": "ZhuishuShenqi/5.0.0 (Android 12)",
+            "User-Agent": "ZhuiShu/5.0.1 (iPhone; iOS 16.0; Scale/3.00)",
             "X-Device-Id": self._device_id,
             "Content-Type": "application/x-www-form-urlencoded",
         }
         data = {"phone": phone, "type": "login"}
         async with self.session.post(url, data=data, headers=headers) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
+            resp_text = await resp.text()
+            logger.info(f"短信接口响应码: {resp.status}, 内容: {resp_text[:200]}")
+            if resp.status == 404:
+                return {"success": False, "msg": "接口不存在 (404)，请更换登录方式。"}
+            try:
+                result = json.loads(resp_text)
+            except Exception:
+                return {"success": False, "msg": f"非 JSON 响应: {resp_text[:100]}"}
             if result.get("ok"):
-                gt = result.get("gt", "")
-                challenge = result.get("challenge", "")
-                return {"success": True, "gt": gt, "challenge": challenge, "msg": "验证码已发送"}
+                return {"success": True, "gt": result.get("gt", ""), "challenge": result.get("challenge", ""), "msg": "验证码已发送"}
             return {"success": False, "msg": result.get("msg", "发送失败")}
 
-    async def login_with_sms(self, phone: str, code: str, geetest_validate: str,
-                             geetest_challenge: str, geetest_seccode: str) -> Dict[str, Any]:
-        """短信登录，传入极验校验结果。返回 {success, token, uid, msg}"""
-        await self._ensure_session()
-        url = f"{self.api_base}/user/login"
-        headers = {
-            "User-Agent": "ZhuishuShenqi/5.0.0 (Android 12)",
-            "X-Device-Id": self._device_id,
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        data = {
-            "phone": phone,
-            "sms_code": code,
-            "geetest_challenge": geetest_challenge,
-            "geetest_validate": geetest_validate,
-            "geetest_seccode": geetest_seccode,
-        }
-        async with self.session.post(url, data=data, headers=headers) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
-            if result.get("ok"):
-                token = result.get("token", "")
-                uid = result.get("user", {}).get("id", "")
-                return {"success": True, "token": token, "uid": str(uid), "msg": "登录成功"}
-            return {"success": False, "msg": result.get("msg", "登录失败")}
-
+    # ---------- 查询账号信息 ----------
     async def get_account_info(self, token: str) -> Dict[str, Any]:
         """获取账号金币/余额/等级等信息。"""
         await self._ensure_session()
         url = f"{self.api_base}/account/profile"
         headers = {
-            "User-Agent": "ZhuishuShenqi/5.0.0 (Android 12)",
+            "User-Agent": "ZhuiShu/5.0.1 (iPhone; iOS 16.0; Scale/3.00)",
             "X-Device-Id": self._device_id,
             "Authorization": f"Bearer {token}",
         }
@@ -229,7 +253,7 @@ class UserStore:
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def save(self, qq: str, token: str, uid: str):
+    def save(self, qq: str, token: str, uid: str = ""):
         data = self._read()
         data[qq] = {"token": token, "uid": uid, "updated_at": int(time.time())}
         self._write(data)
@@ -253,11 +277,10 @@ class UserStore:
 # ---------------------------------------------------------------------------
 
 @register("astrbot_plugin_zhuishushenqi", "1LiuHua1", "追书神器免费版插件",
-          "1.0.0", "支持短信登录、极验自动过验、青龙同步")
+          "1.0.1", "支持短信登录、极验自动过验、青龙同步")
 class ZhuishuShenqiPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.waiting_for_code: Dict[str, dict] = {}  # qq -> {"phone","gt","challenge"}
         self.store = UserStore()
 
     # -----------------------------------------------------------------------
@@ -272,7 +295,7 @@ class ZhuishuShenqiPlugin(Star):
         return True  # 所有用户均可使用基础功能
 
     # -----------------------------------------------------------------------
-    # 指令1：短信登录
+    # 指令1：登录（新版策略）
     # -----------------------------------------------------------------------
     @filter.command("zssq_login")
     async def cmd_login(self, event: AstrMessageEvent):
@@ -281,83 +304,67 @@ class ZhuishuShenqiPlugin(Star):
             yield event.plain_result("您没有使用此命令的权限。")
             return
 
-        phones = event.message_str.strip().split()
-        if len(phones) < 2:
-            yield event.plain_result("用法：/zssq_login 手机号")
-            return
-        phone = phones[1]
-        if not re.fullmatch(r"\d{11}", phone):
-            yield event.plain_result("手机号格式不正确。")
-            return
-
+        # 尝试通过 /account/profile 检测登录态（无需手机号）
         cfg = _load_config(self.context)
         client = ZSSQClient(cfg["zssq_api_base"])
         try:
-            result = await client.request_sms_code(phone)
+            result = await client.check_auth()
+        except Exception as e:
+            logger.error(f"登录检查异常: {e}")
+            yield event.plain_result(f"网络请求异常：{e}")
+            return
         finally:
             await client.close()
 
-        if not result["success"]:
-            yield event.plain_result(f"发送验证码失败：{result['msg']}")
-            return
-
-        self.waiting_for_code[user_id] = {
-            "phone": phone,
-            "gt": result.get("gt"),
-            "challenge": result.get("challenge"),
-        }
-        yield event.plain_result(
-            f"验证码已发送至 {phone}，请在90秒内回复：/zssq_code 验证码"
-        )
+        if result.get("success"):
+            # 检测到有效登录态，但缺少 token，提示手动设置
+            uid = result.get("uid", "未知")
+            yield event.plain_result(
+                f"检测到您的设备已登录追书神器（UID: {uid}），但自动获取 token 较复杂。\n"
+                "请手动抓取 Authorization 头中的 token，然后使用 /zssq_token <你的token> 来保存。\n"
+                "抓包教程抓取 App 中 goldcoinnew.zhuishushenqi.com 域名的请求头。"
+            )
+        else:
+            # 未检测到登录态，提示用户手动登录 App 后再抓包
+            yield event.plain_result(
+                "未能检测到有效登录态，建议在手机上登录追书神器 App 后，通过抓包获取 token。\n"
+                "获取后使用 /zssq_token <token> 命令保存。详细步骤请参考插件文档。"
+            )
 
     # -----------------------------------------------------------------------
-    # 指令2：输入验证码完成登录
+    # 指令2：手动设置 Token（替代原有的短信登录流程）
     # -----------------------------------------------------------------------
-    @filter.command("zssq_code")
-    async def cmd_code(self, event: AstrMessageEvent):
+    @filter.command("zssq_token")
+    async def cmd_set_token(self, event: AstrMessageEvent):
         user_id = str(event.get_sender_id())
-        entry = self.waiting_for_code.pop(user_id, None)
-        if not entry:
-            yield event.plain_result("您还未发起短信登录，请先使用 /zssq_login 手机号。")
-            return
-
-        parts = event.message_str.strip().split()
+        parts = event.message_str.strip().split(maxsplit=1)
         if len(parts) < 2:
-            yield event.plain_result("用法：/zssq_code 验证码")
+            yield event.plain_result("用法：/zssq_token <你的token>")
             return
-        code = parts[1]
-
+        token = parts[1].strip()
+        if not token:
+            yield event.plain_result("token 不能为空")
+            return
+        # 简单校验 token 是否有效（可选：用 check_auth(token) 验证）
         cfg = _load_config(self.context)
-        appkey = cfg.get("geetest_appkey", "")
-        if not appkey:
-            yield event.plain_result("未配置极验 AppKey，无法自动过验证。")
-            return
-
-        try:
-            geetest_result = await _get_geetest_response(
-                entry["gt"], entry["challenge"], appkey, "https://app.zhuishushenqi.com/login"
-            )
-        except RuntimeError as e:
-            yield event.plain_result(f"极验验证失败：{e}")
-            return
-
         client = ZSSQClient(cfg["zssq_api_base"])
+        valid = False
+        uid = ""
         try:
-            login_result = await client.login_with_sms(
-                entry["phone"], code,
-                geetest_result["validate"],
-                geetest_result["challenge"],
-                geetest_result["validate"] + "|jordan",
-            )
+            check = await client.check_auth(token=token)
+            if check.get("success"):
+                valid = True
+                uid = check.get("uid", "")
+        except Exception:
+            pass
         finally:
             await client.close()
 
-        if not login_result["success"]:
-            yield event.plain_result(f"登录失败：{login_result['msg']}")
-            return
-
-        self.store.save(user_id, login_result["token"], login_result["uid"])
-        yield event.plain_result(f"登录成功！UID: {login_result['uid']}")
+        if valid:
+            self.store.save(user_id, token, uid)
+            yield event.plain_result(f"Token 验证通过，已保存。UID: {uid}")
+        else:
+            yield event.plain_result("提供的 token 似乎无效，请检查后重试。")
 
     # -----------------------------------------------------------------------
     # 指令3：查询账号信息
@@ -367,7 +374,7 @@ class ZhuishuShenqiPlugin(Star):
         user_id = str(event.get_sender_id())
         user = self.store.get(user_id)
         if not user:
-            yield event.plain_result("您尚未登录，请先使用 /zssq_login 手机号。")
+            yield event.plain_result("您尚未设置 token，请使用 /zssq_token 设置。")
             return
 
         cfg = _load_config(self.context)
@@ -397,7 +404,7 @@ class ZhuishuShenqiPlugin(Star):
         user_id = str(event.get_sender_id())
         user = self.store.get(user_id)
         if not user:
-            yield event.plain_result("您尚未登录，请先使用 /zssq_login 手机号。")
+            yield event.plain_result("您尚未设置 token，请使用 /zssq_token 设置。")
             return
 
         cfg = _load_config(self.context)
@@ -442,7 +449,7 @@ class ZhuishuShenqiPlugin(Star):
                 return
             lines = []
             for qq, info in all_users.items():
-                lines.append(f"QQ: {qq} | UID: {info['uid']} | 登录时间: {info['updated_at']}")
+                lines.append(f"QQ: {qq} | UID: {info.get('uid', '未知')} | 更新时间: {info['updated_at']}")
             yield event.plain_result("\n".join(lines))
 
         elif action == "delete":
@@ -498,6 +505,30 @@ class ZhuishuShenqiPlugin(Star):
             yield event.plain_result(f"白名单已更新: {new_whitelist}")
         else:
             yield event.plain_result("未知操作，支持 add / remove / list。")
+
+    # -----------------------------------------------------------------------
+    # 指令7：帮助
+    # -----------------------------------------------------------------------
+    @filter.command("zssq_help")
+    async def cmd_help(self, event: AstrMessageEvent):
+        help_text = (
+            "追书神器插件帮助\n"
+            "========\n"
+            "/zssq_login - 检测登录态并提示获取 token\n"
+            "/zssq_token <token> - 手动设置 token\n"
+            "/zssq_info - 查看账号信息\n"
+            "/zssq_sync - 同步 token 到青龙\n"
+            "/zssq_accounts list|delete - 账号管理（管理员）\n"
+            "/zssq_whitelist add|remove|list - 白名单管理（管理员）\n"
+            "/zssq_help - 显示本帮助\n"
+            "\n"
+            "获得 token 的方法：\n"
+            "1. 手机安装追书神器 App 并登录\n"
+            "2. 电脑安装抓包软件（如 Charles），手机设置代理\n"
+            "3. 操作 App 任意功能，筛选 goldcoinnew.zhuishushenqi.com 的请求\n"
+            "4. 复制请求头中 Authorization: Bearer 后面的字符串，即为 token"
+        )
+        yield event.plain_result(help_text)
 
     # -----------------------------------------------------------------------
     # 生命周期
