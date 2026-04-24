@@ -1,0 +1,32 @@
+{
+  "zssq_api_base": {
+    "description": "追书神器API服务器根地址",
+    "type": "string",
+    "default": "https://goldcoinnew.zhuishushenqi.com"
+  },
+  "geetest_appkey": {
+    "description": "极验验证码自动过验服务的 AppKey",
+    "type": "string",
+    "default": ""
+  },
+  "qinglong_url": {
+    "description": "青龙/呆呆面板地址",
+    "type": "string",
+    "default": ""
+  },
+  "qinglong_client_id": {
+    "description": "青龙 OpenAPI Client ID",
+    "type": "string",
+    "default": ""
+  },
+  "qinglong_client_secret": {
+    "description": "青龙 OpenAPI Client Secret",
+    "type": "string",
+    "default": ""
+  },
+  "admin_whitelist": {
+    "description": "管理员用户ID列表，逗号分隔",
+    "type": "string",
+    "default": ""
+  }
+}
