@@ -1,9 +1,10 @@
 name: astrbot_plugin_zhuishushenqi
-author: xiaohai
+author: 1LiuHua1
 display_name: 追书神器免费版
 desc: 追书神器AstrBot插件，支持短信登录、极验验证码自动过验、青龙/呆呆面板同步。
 version: "1.0.0"
-repo: https://github.com/xiaohai/astrbot_plugin_zhuishushenqi
+repo: https://github.com/1LiuHua1/astrbot_plugin_zhuishushenqi
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.16,<5"
+package_mode: default
